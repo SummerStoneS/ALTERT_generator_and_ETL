@@ -180,10 +180,10 @@ def cal_inventory_2months_avg(df):
     return df
 
 
-def cal_actual_bg_ads_and_scrap_rate(df):
-    ads = df["avg_inventory_for_ads"].sum() / df["cogs_for_ads"].sum() * 30
-    scrap = df["fg_scrap_amount"].sum() / df["revenue_amt_for_scrap"].sum()
-    return pd.Series({"ads":ads, "scrap_rate":scrap})
+# def cal_actual_bg_ads_and_scrap_rate(df):
+#     ads = df["avg_inventory_for_ads"].sum() / df["cogs_for_ads"].sum() * 30
+#     scrap = df["fg_scrap_amount"].sum() / df["revenue_amt_for_scrap"].sum()
+#     return pd.Series({"ads":ads, "scrap_rate":scrap})
 
 
 def bg_target_ads_scrap_rate(df):
@@ -304,6 +304,12 @@ def add_usd_currency_and_fx_rate_for_cost_app_tables(data):
     data.rename(columns={"FX":"fx_rate"}, inplace=True)
     return data
 
+def add_NTD_currency_and_fx_rate(data):
+    data["currency"] = "NTD"
+    data = find_fx_rate(data, left_key="reporting_month")
+    data.rename(columns={"FX":"fx_rate"}, inplace=True)
+    return data
+
 """
     from below are main etl functions
     i.e. each function create an app table
@@ -421,33 +427,68 @@ def staging_is_kpi_moh_to_app_perf_overview_model():
     stage_to_app_indireact("perf_overview_model", filter_year)
 
 
+def get_cat_ind(level1_shipment, type):
+    if type == "site_and_type":
+        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"]
+    elif type == "all":
+        level1_shipment["new_cat_ind"] = "ALL"
+    elif type == "site":
+        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[:3])
+    else:  # product_type
+        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[4:])
+    return level1_shipment
+
+
+def perf_overview_all_by_cat_ind(level1_shipment, type="site_and_type"):
+    # 计算site_product_type两级,工厂级，product_type级，还有所有汇总（all)
+
+    index_cols = ['bg', 'reporting_month', 'new_cat_ind', 'type']
+    value_cols = ['revenue', 'mva', 'material_cost', 'other_cost', 'opex', 'operating_income', 'moh',
+                  'production', 'shipment','ads','scrap_rate']
+    level1_shipment = get_cat_ind(level1_shipment, type)
+    group_cols = index_cols
+    app_kpi = level1_shipment.groupby(group_cols).sum()
+    # health score rate calculations
+    app_kpi["scrap_rate"] = app_kpi.eval("fg_scrap_amount / revenue_amt_for_scrap")
+    app_kpi["ads"] = app_kpi.eval("avg_inventory_for_ads / cogs_for_ads * 30")
+    cat_ind_group = app_kpi[value_cols]
+    cat_ind_group = cat_ind_group.reset_index()
+    cat_ind_group.rename(columns={"new_cat_ind": "cat_ind"}, inplace=True)
+    return cat_ind_group
+
+
 def app_perf_model_to_perf_overview_all():
-    # step1: calculate actual budget r3m ads and scrap rate
+    # columns= [reporting_month, bg, cat_ind, type, revenue, mva, operating_income, moh, production, shipment, ads,
+    # scrap_rate,material_cost,other_cost opex]
     # for budget and r3m, ads and scrap rate is target rate
     # for actual, ads and scrap rate need calculation
-    app_kpi = get_table_from_app("perf_kpi_model")
-    actual_bg_ads_scrap = app_kpi.groupby(["reporting_month", "bg"]).apply(
-        cal_actual_bg_ads_and_scrap_rate).reset_index()
-    budget_target_ads_scrap = app_kpi.groupby(["reporting_month", "bg"]).apply(
-        bg_target_ads_scrap_rate).reset_index()
-    r3m_target_ads_scrap = app_kpi.groupby(["reporting_month", "bg"]).apply(bg_target_ads_scrap_rate).reset_index()
-    actual_bg_ads_scrap["type"] = "Actual"
-    budget_target_ads_scrap["type"] = "Budget"
-    r3m_target_ads_scrap["type"] = "R3M"
-    bg_ads_scrap = pd.concat([actual_bg_ads_scrap, budget_target_ads_scrap, r3m_target_ads_scrap])
 
-    # Step2: calculate sum of kpi's from perf_overview_model and merge with fx rate
+    # step1: get data source1 by model for calculate actual budget r3m ads and scrap rate
+    app_kpi = get_table_from_app("perf_kpi_model")          # type=actual
+    target = {"fg_ads_target": app_kpi["fg_ads_target"].values[0],
+              'fg_scrap_rate_target': app_kpi['fg_scrap_rate_target'].values[0]}
+    kpi_cols = ['reporting_month', 'product',
+                'cogs_for_ads','avg_inventory_for_ads', 'fg_scrap_amount', 'revenue_amt_for_scrap']
+    app_kpi = app_kpi[kpi_cols]
+    app_kpi["type"] = "Actual"
+    # step2. get data source2 by model for income, cost, quantity
     app_perf = get_table_from_app("perf_overview_model")
-    bg_perf_by_type = app_perf.groupby(["reporting_month", "bg", "type"]).sum().reset_index()
-    app_bg_overview = pd.merge(bg_perf_by_type, bg_ads_scrap, how="left", left_on=["reporting_month", "bg", "type"],
-                               right_on=["reporting_month", "bg", "type"])
-    del app_bg_overview["fx_rate"]
-    app_bg_overview["reporting_month"] = pd.to_datetime(app_bg_overview["reporting_month"])
-    app_bg_overview = find_fx_rate(app_bg_overview, left_key="reporting_month")
-    app_bg_overview.rename(columns={"FX": "fx_rate"}, inplace=True)
-    app_bg_overview["currency"] = "NTD"
-    app_bg_overview["cat_ind"] = "ALL"
-    stage_to_app_indireact("perf_overview_all", app_bg_overview)
+    use_cols = ['reporting_month', 'bg', 'site', 'product', 'type',
+                'revenue','mva', 'material_cost', 'other_cost', 'opex', 'operating_income', 'moh',
+                'production', 'shipment']
+    app_perf = app_perf[use_cols]
+    # step3. merge two data sources
+    base_data = app_perf.merge(app_kpi, on=["reporting_month", "product", "type"], how="left")
+    base_data = get_product_type(base_data)
+    base_data["cat_ind"] = base_data.apply(lambda x: "_".join([x["site"],x["product_type"]]), axis=1)
+    # get aggregate data by cat_ind
+    perf_overview_all_data = combine_three_cat_ind_level(base_data, standard=None, groupfunc=perf_overview_all_by_cat_ind)
+    # for budget and r3m, ads and scrap rate is target rate
+    perf_overview_all_data["ads"] = np.where(perf_overview_all_data["type"]!='Actual', target["fg_ads_target"], perf_overview_all_data["ads"])
+    perf_overview_all_data["scrap_rate"] = np.where(perf_overview_all_data["type"]!='Actual',
+                                                    target["fg_scrap_rate_target"], perf_overview_all_data["ads"])
+    perf_overview_all_data = add_NTD_currency_and_fx_rate(perf_overview_all_data)
+    stage_to_app_indireact("perf_overview_all", perf_overview_all_data)
 
 
 ########################################################################################
@@ -457,14 +498,7 @@ def app_perf_model_to_perf_overview_all():
 
 def groupby_and_per_shipment(level1_shipment, type="site_and_type", divided_by=None):
     # 计算site_product_type两级,工厂级，product_type级，还有所有汇总（all)
-    if type == "site_and_type":
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"]
-    elif type == "all":
-        level1_shipment["new_cat_ind"] = "ALL"
-    elif type == "site":
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[:3])
-    else:  # product_type
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[4:])
+    level1_shipment = get_cat_ind(level1_shipment, type)
     group_cols = ['bg', 'reporting_month', 'new_cat_ind', 'type']
     cost_level1_all = level1_shipment.groupby(group_cols).sum()
     if divided_by:      # 有可能不需要计算cost per shipment, cost per production
@@ -519,14 +553,7 @@ def cost_overview_level1(cost, p_cost_level1, standard="shipment"):
 
 def groupby_level2_with_unit_cost(level1_shipment, type="site_and_type",divided_by="both"):
     # 计算site_product_type两级,工厂级，product_type级，还有所有汇总（all)
-    if type == "site_and_type":
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"]
-    elif type == "all":
-        level1_shipment["new_cat_ind"] = "ALL"
-    elif type == "site":
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[:3])
-    else:  # product_type
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[4:])
+    level1_shipment = get_cat_ind(level1_shipment, type)
     group_cols = ['bg', 'reporting_month','type','product','cost_cat_code','cost_item_level2', 'new_cat_ind']
     cost_level1_all = level1_shipment.groupby(group_cols).sum()
     if divided_by == "both":
@@ -555,7 +582,6 @@ def extract_cost_or_shipment_or_production(cost, item):
     type_as_col.rename(columns={"variable": "type", "value": f"{item}"}, inplace=True)
     return type_as_col
 
-
 ################################################################################################
                             # luke health tables function tools
 ################################################################################################
@@ -565,14 +591,7 @@ def health_rate_agg_by_cat_ind(level1_shipment, type="site_and_type"):
     index_cols = ['bg', 'reporting_month', 'new_cat_ind']
     value_cols = ['shipment_rate', 'production_rate', 'unit_moh_rate', 'material_cost_variance', 'yield_rate',
                   'yield_rate_curr_target', "ads"]
-    if type == "site_and_type":
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"]
-    elif type == "all":
-        level1_shipment["new_cat_ind"] = "ALL"
-    elif type == "site":
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[:3])
-    else:  # product_type
-        level1_shipment["new_cat_ind"] = level1_shipment["cat_ind"].apply(lambda x: x[4:])
+    level1_shipment = get_cat_ind(level1_shipment, type)
     group_cols = index_cols
     level1_shipment["yield_volume"] = level1_shipment.eval("yield_rate * production")
     level1_shipment["yield_target_volume"] = level1_shipment.eval("yield_rate_curr_target * production")
