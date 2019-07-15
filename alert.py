@@ -146,7 +146,7 @@ class AlertBase:
         if rule == 1:
             max_mps = round(row["max_mps"] / 1000)
             value = "{:.2f}".format(row["production"] / row["max_capacity"] * 100)
-            value2 = "{:.2f}".format(max_mps / row["max_capacity"] * 100)
+            value2 = "{:.2f}".format(row["max_mps"] / row["max_capacity"] * 100)
             production = round(row["production"] / 1000)
             lead1 = f"{object} reporting period production volume was {production}K, only {value} % of max capacity"
             lead2 = f"{object} Maximum MPS 6 month requirement was {max_mps}K, stays below {value2} % of max capacity"
@@ -396,12 +396,14 @@ def merge_unitmoh(base_kpi):
 
 
 def merge_is_model(base_kpi):
-    app_is = get_table_from_app("cost_overview_dtl")
+    # TODO(2019.7.11 due to fx rate calculation change, source changed from cost_overview_dtl to cost_overview_dtl_ntd)
+    app_is = get_table_from_app("cost_overview_dtl_ntd")
     cur_month_is = filter_reporting_month_by_date(app_is, latest_date)
     cur_month_is = cur_month_is[cur_month_is["cost_box_group"].isin(['Other cost', 'OPEX'])]
-    # from usd to ntd
-    for type in ["actual", "budget", "r3m"]:
-        cur_month_is[f"{type}_total_cost"] = cur_month_is[f"{type}_total_cost"] * cur_month_is["fx_rate"]
+    # TODO(fx rate change,now use NTD version, don't need to change from usd to ntd)
+    # # from usd to ntd
+    # for type in ["actual", "budget", "r3m"]:
+    #     cur_month_is[f"{type}_total_cost"] = cur_month_is[f"{type}_total_cost"] * cur_month_is["fx_rate"]
     level1_group = cur_month_is.groupby(['reporting_month','product','cost_item_level1']).\
         agg({'actual_total_cost':'sum',
              'budget_total_cost':"sum",
@@ -439,12 +441,12 @@ if __name__ == '__main__':
     SiteAlertMaker.generate_alerts(rule=8)
 
     # insert result into db
-    stage_to_app_indireact("perf_alerts", SiteAlertMaker.alerts, db_id=False)      # app表中没有id
-    stage_to_app_indireact("perf_alert_leads", SiteAlertMaker.leads, db_id=False)  # app表中没有id
-
-
-    # SiteAlertMaker.alerts.to_excel("perf_alerts.xlsx")
-    # SiteAlertMaker.leads.to_excel("perf_alert_leads.xlsx")
+    # stage_to_app_indireact("perf_alerts", SiteAlertMaker.alerts, db_id=False)      # app表中没有id
+    # stage_to_app_indireact("perf_alert_leads", SiteAlertMaker.leads, db_id=False)  # app表中没有id
+    #
+    #
+    # SiteAlertMaker.alerts.to_excel("perf_alerts_0711.xlsx")
+    # SiteAlertMaker.leads.to_excel("perf_alert_leads_0711.xlsx")
     # site_alert_source.to_excel("site_is_alert_source.xlsx")
 
     # insert middle table into db staging table

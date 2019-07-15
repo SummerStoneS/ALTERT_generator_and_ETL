@@ -7,7 +7,7 @@
 import numpy as np
 from sqlalchemy import create_engine
 import pandas as pd
-from raw_to_staging import aligh_table_cols_with_db,get_db_table_to_df,find_fx_rate
+from raw_to_staging import aligh_table_cols_with_db,get_db_table_to_df,find_fx_rate,find_fx_rate_with_type_col
 
 """
     from staging to app
@@ -306,7 +306,7 @@ def add_usd_currency_and_fx_rate_for_cost_app_tables(data):
 
 def add_NTD_currency_and_fx_rate(data):
     data["currency"] = "NTD"
-    data = find_fx_rate(data, left_key="reporting_month")
+    data = find_fx_rate_with_type_col(data, left_key="reporting_month")
     data.rename(columns={"FX":"fx_rate"}, inplace=True)
     return data
 
@@ -418,7 +418,7 @@ def staging_is_kpi_moh_to_app_perf_overview_model():
                       right_on=["reporting_month", "product"], how="left")
     merged["currency"] = "NTD"
     merged["bu"] = ""
-    merged = find_fx_rate(merged, left_key="reporting_month")
+    merged = find_fx_rate_with_type_col(merged, left_key="reporting_month")
     app_perf_overview_rename = {"production_volume": "production",
                                 "shipment_volume": "shipment",
                                 "FX": "fx_rate"}
@@ -486,7 +486,7 @@ def app_perf_model_to_perf_overview_all():
     # for budget and r3m, ads and scrap rate is target rate
     perf_overview_all_data["ads"] = np.where(perf_overview_all_data["type"]!='Actual', target["fg_ads_target"], perf_overview_all_data["ads"])
     perf_overview_all_data["scrap_rate"] = np.where(perf_overview_all_data["type"]!='Actual',
-                                                    target["fg_scrap_rate_target"], perf_overview_all_data["ads"])
+                                                    target["fg_scrap_rate_target"], perf_overview_all_data["scrap_rate"])
     perf_overview_all_data = add_NTD_currency_and_fx_rate(perf_overview_all_data)
     stage_to_app_indireact("perf_overview_all", perf_overview_all_data)
 
@@ -676,7 +676,8 @@ if __name__ == '__main__':
 
     # copy staging.dim_project to app.health_project_status
     dim_project = get_table_from_staging("dim_project")
-    dim_project.to_sql("health_project_status", con=engine, schema="app")
+    dim_project.rename(columns={"project_status": "product_status"}, inplace=True)
+    stage_to_app_indireact("health_product_status", dim_project)
 
     """
         from app to app.health_kpi_model
@@ -713,19 +714,26 @@ if __name__ == '__main__':
     cost_overview = shipment_for_cost_overview(source_item_with_cost) # add actual/r3m/budget shipment and production
     cost_overview = find_fx_rate(cost_overview,left_key="reporting_month")
     # change money cols from ntd to usd
-    cost_overview = money_from_ntd_to_usd(cost_overview, cols=['actual_total_cost', 'budget_total_cost', 'r3m_total_cost'])
+    # TODO(2019.7.11 fx rate calculation changed, if convert to USD, need modify, up to now, generate a NTD version)
+    # cost_overview = money_from_ntd_to_usd(cost_overview, cols=['actual_total_cost', 'budget_total_cost', 'r3m_total_cost'])
     # 2019.7.5计算total cost的时候需要乘上production 这里补上
     # 2019.7.7 仅仅(cost_item_level1 == 'MOH_WEKS') | (cost_item_level1 == 'MOH_WMI')的时候需要做这个乘法
     cost_overview = mul_cost_with_production(cost_overview)
     # 2019.7.5site=WMI的时候cost_item_level1=MOH_WEKS的三个total cost改成0；site=WKS的时候，cost_item_level1=MOH_WMI的三个cost改成0
-    cost_overview.loc[cost_overview.query("((site=='WMI')&(cost_item_level1=='MOH_WEKS'))|((site=='WKS')&(cost_item_level1=='MOH_WMI'))").index,\
-    ["actual_total_cost", "budget_total_cost", "r3m_total_cost"]] = np.nan
-    cost_overview["currency"] = "USD"
+    for type in ["actual", "budget", "r3m"]:
+        cost_overview[f"{type}_total_cost"]=np.where(((cost_overview["site"] == 'WMI') & (cost_overview["cost_item_level1"]=='MOH_WEKS'))|
+                                                    ((cost_overview["site"] == 'WKS') & (cost_overview["cost_item_level1"] == 'MOH_WMI')),
+                                                    np.nan, cost_overview[f"{type}_total_cost"])
+
+    # cost_overview.loc[cost_overview.query("((site=='WMI')&(cost_item_level1=='MOH_WEKS'))|((site=='WKS')&(cost_item_level1=='MOH_WMI'))").index,["actual_total_cost", "budget_total_cost", "r3m_total_cost"]] = 0
+    # TODO(2019.7.11 fx rate calculation changed, temperarily generate a NTD version)
+    cost_overview["currency"] = "NTD"
     cost_overview.rename(columns={"FX":"fx_rate"}, inplace=True)
     # filter 2018 onwards data
     filtered_cost_overview = filter_reporting_month_by_year(cost_overview, date_key="reporting_month", from_year_on=2018)
-
-    stage_to_app_indireact("cost_overview_dtl",filtered_cost_overview)
+    # TODO(2019.7.11 fx rate calculation changed, temperarily generate a NTD version table name)
+    # USD currency table name cost_overview_dtl, NTD table name cost_overview_dtl_ntd
+    stage_to_app_indireact("cost_overview_dtl_ntd",filtered_cost_overview)
 
     """
         2019.7.5 Luke's cost app tables

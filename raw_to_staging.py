@@ -35,19 +35,76 @@ def find_model_code_in_project_info(data, left_key="Model"):
     return data
 
 
-def find_fx_rate(data, left_key="Month"):
+def find_r3m_version_date(data,left_key="reporting_month"):
+    # 2019.7.l1 fx calculation changed, from one source to 3 sources
+    r3m_raw = get_db_table_to_df("raw", "r3m p&l")
+    reporting_month_version = r3m_raw[["Period", "Version"]].drop_duplicates()
+    reporting_month_version["Period"] = pd.to_datetime(reporting_month_version["Period"], format="%Y/%m")
+    reporting_month_version["Version"] = pd.to_datetime(reporting_month_version["Version"], format="%Y%m%d")
+    reporting_month_version = reporting_month_version.set_index("Period")
+    map_dict = reporting_month_version["Version"].to_dict()
+    if data[left_key].dtype == 'O':
+        data[left_key] = pd.to_datetime(data[left_key])
+    data["Version"] = data[left_key].map(map_dict)
+    return data
+
+
+def unit_version_date_for_r3m(x):
+    # 2019.7.l1 fx calculation changed, from one source to 3 sources
+    x = pd.to_datetime(x)
+    year = x.year
+    month = x.month
+    if month == 12:
+        year += 1
+        month = 1
+    return pd.to_datetime(f"{year}-{month+1}-1")
+
+
+def find_fx_rate(data, left_key="Month",type="Actual"):
     """
     :param data:df that need to find usd->NTD fx rate
     :param left_key: the key that stands for month time to merge with fx rate db table
+    :param type: actual,r3m and budget get fx rate from different raw table (data should contain only one type)
     :return: merge fx rate to data
+    # 2019.7.l1 fx calculation changed, from one source to 3 sources
     """
     if data[left_key].dtype == 'O':
         data["Month"] = pd.to_datetime(data[left_key])
         left_key = "Month"
-    fx_rate = get_db_table_to_df("raw", "FX rate")
+
+    if type == "Actual":
+        fx_rate = get_db_table_to_df("raw", "FX rate")
+        fx_rate = fx_rate.set_index("Month")
+    elif type == "Budget":
+        data["Year"] = data[left_key].dt.year
+        left_key = "Year"
+        fx_rate = get_db_table_to_df("raw", "Budget_fx")
+        fx_rate = fx_rate.set_index("Year")
+    else:
+        # R3M 需要根据version date查找rate，取version date的下一个月
+        data["Month"] = data["Version"].apply(unit_version_date_for_r3m)
+        fx_rate = get_db_table_to_df("raw", "R3M_fx")
+        fx_rate = fx_rate.set_index("Month")
+        left_key = "Month"
     fx_rate = fx_rate.query("(From=='USD')&(To=='NTD')")
-    data = pd.merge(data, fx_rate[['Month', 'FX']],left_on=left_key, right_on="Month",how="left",copy=False)
+    data = pd.merge(data, fx_rate['FX'],left_on=left_key, right_index=True, how="left", copy=False)
     return data
+
+
+def find_fx_rate_with_type_col(data, left_key="reporting_month"):
+    # 2019.7.l1 fx calculation changed, from one source to 3 sources
+    # data contain multiple types, and should find fx seperately using function find_fx_rate
+    init_cols = list(data.columns)
+    init_cols.append("FX")
+    type_list = data["type"].unique()
+    result = pd.DataFrame()
+    for type in type_list:
+        one_type_data = data.query("type == @type")
+        if type == "R3M":
+            one_type_data = find_r3m_version_date(one_type_data, left_key=left_key)
+        one_type_data = find_fx_rate(one_type_data, left_key=left_key, type=type)
+        result = pd.concat([result, one_type_data[init_cols]])
+    return result
 
 
 def aligh_table_cols_with_db(db_table, df, remove_id=True):
@@ -56,6 +113,7 @@ def aligh_table_cols_with_db(db_table, df, remove_id=True):
         cols.remove("id")
     db_data=df[cols]
     return db_data
+
 
 def raw_to_stage_indireact(db_tb_name, data2):
     """
@@ -111,7 +169,7 @@ def load_raw_accounting_to_melt_and_add_additional_cols(type="Budget"):
     melt_actual_desc_code["currency"] = melt_actual_desc_code["accounting_item_desc"].apply(
         lambda x: None if re.search("quantity", x) else "NTD")
     melt_actual_desc_code["Period"] = pd.to_datetime(melt_actual_desc_code["Period"], format="%Y/%m")
-    melt_actual_desc_code = find_fx_rate(melt_actual_desc_code, left_key="Period")
+    melt_actual_desc_code = find_fx_rate(melt_actual_desc_code, left_key="Period", type=type)
     melt_actual_desc_code["type"] = type
     melt_actual_desc_code["bg"] = "SDBG"
     melt_actual_desc_code["bu"] = ""
@@ -219,6 +277,7 @@ def raw_to_dim_project():
     project_info_rename = {
         'Project name': "product",
         'Site':"site",
+        'AllieCode Name': "product_code",
         'Product Type': "product_type",
         'Current stage': "project_status",
         'MP Start': "mp_start_month",

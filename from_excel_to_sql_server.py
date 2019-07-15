@@ -43,7 +43,9 @@ if __name__ == '__main__':
                             ["project info.xlsx", "project info",["MP Start", "Shipment Start"]],
                             ["budget p&l.xlsx", "budget p&l",[]],
                             ["Actual p&l for loading history only.xlsx", "actual p&l",[]]
-                            ["FX rate.xlsx", "FX rate",["Month"]],
+                            ["FX rate.xlsx", "FX rate",["Month"]],                      # for actual fx rate
+                            ["budget_rate.xlsx", "Budget_fx", []],                # for budget rate
+                            ["booking_rate.xlsx", "R3M_fx", ["Month"]],                 # for r3m rate
                             ["Scrap amount.xlsx", "Scrap amount",["Month"]],
                             ["input owner and deadline.xlsx", "input owner and deadline",[]],
                             ["ADS.xlsx", "ADS",["Month"]],
